@@ -1,3 +1,7 @@
+import math
+X_TYPE = 1
+O_TYPE = 2
+
 def parse_input(input_file="input.txt"):
     """
     Parse the input file for board and state for current piece type and board state
@@ -9,7 +13,7 @@ def parse_input(input_file="input.txt"):
             lines = [line.strip() for line in f.readlines()]
             assert len(lines) == 11
             piece_type = int(lines[0])
-            assert piece_type == 1 or piece_type == 2
+            assert piece_type == X_TYPE or piece_type == O_TYPE
             prev_board = []
             for line in lines[1:6]:
                 assert len(line) == 5
@@ -37,24 +41,89 @@ def write_move(move):
                     raise ValueError("Invalid move coordinates!")
     except Exception as e:
         raise RuntimeError(f"Failed to write output: {str(e)}")
+    
+def board_to_key(prev_board, curr_board, piece_type):
+    """
+    Convert board to a string key for the Q-table.
+    :param piece_type: the type of piece we are having
+    :param board: the board
+    :return: encoded version of board, length is 26: first 25 chars for the state, last char for piece type
+    """
+    result = ''.join(''.join(str(cell) for cell in row) for row in prev_board)
+    cur_result = ''.join(''.join(str(cell) for cell in row) for row in curr_board)
+    result = result + cur_result + str(piece_type)
+    return result
 
+
+def key_to_board(state):
+    """
+    Convert a state key back to the previous board, current board, and piece type.
+    The state key is constructed as:
+      [prev_board (board_size^2 characters)] +
+      [curr_board (board_size^2 characters)] +
+      [piece_type (1 character)]
+    
+    :param state: String encoding of the state.
+    :return: Tuple (prev_board, curr_board, piece_type)
+             where prev_board and curr_board are 2D lists representing the boards,
+             and piece_type is an integer.
+    """
+    total_len = len(state)
+    # Compute board_size^2: total length minus one for piece type, divided by 2.
+    board_size_sq = (total_len - 1) // 2
+    board_size = int(math.sqrt(board_size_sq))
+    
+    # Extract the previous board part, current board part, and piece type.
+    prev_board_str = state[:board_size_sq]
+    curr_board_str = state[board_size_sq:2 * board_size_sq]
+    piece_type = int(state[-1])
+    
+    # Reconstruct the previous board as a 2D list.
+    prev_board = []
+    for i in range(board_size):
+        row = [int(prev_board_str[i * board_size + j]) for j in range(board_size)]
+        prev_board.append(row)
+    
+    # Reconstruct the current board as a 2D list.
+    curr_board = []
+    for i in range(board_size):
+        row = [int(curr_board_str[i * board_size + j]) for j in range(board_size)]
+        curr_board.append(row)
+    
+    return prev_board, curr_board, piece_type
+
+
+# Maybe we need 2 variation of this function to make things faster
+def get_group(board, i, j, player):
+    """
+    Returns all coordinates belonging to the connected group of stones for the given player starting at (i, j).
+    """
+    group = []
+    stack = [(i, j)]
+    visited = set()
+    while stack:
+        x, y = stack.pop()
+        if (x, y) in visited:
+            continue
+        visited.add((x, y))
+        group.append((x, y))
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < len(board) and 0 <= ny < len(board[0]):
+                if board[nx][ny] == player and (nx, ny) not in visited:
+                    stack.append((nx, ny))
+    return group
 
 def count_liberties(board, i, j, player):
     """
-    count the liberty order of piece (or group) at position (i, j)
-    :param board: the current board of size 5 x 5
-    :param i: ith row
-    :param j: jth column
-    :param player: piece_type
-    :return: liberty order of piece or group at position (i, j)
+    Count unique liberties (empty adjacent cells) for the group at position (i, j) belonging to player.
     """
     if board[i][j] != player:
-        # it is either empty or opponent's piece
         return 0
 
     visited = set()
+    liberties = set()
     stack = [(i, j)]
-    liberties = 0
     directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
     while stack:
@@ -64,47 +133,213 @@ def count_liberties(board, i, j, player):
         visited.add((x, y))
         for dx, dy in directions:
             nx, ny = x + dx, y + dy
-            if 0 <= nx < 5 and 0 <= y < 5:
+            if 0 <= nx < len(board) and 0 <= ny < len(board[0]):
                 if board[nx][ny] == 0:
-                    liberties += 1
-                elif board[nx][ny] == player:
+                    liberties.add((nx, ny))
+                elif board[nx][ny] == player and (nx, ny) not in visited:
                     stack.append((nx, ny))
-    return liberties
+    return len(liberties)
 
 def is_suicide(board, i, j, player):
+    """
+    Examine if placing a stone at (i, j) will cause suicide.
+    Assumes the slot is empty.
+    """
+    # Create a temporary copy and place the stone.
+    temp_board = [row.copy() for row in board]
+    temp_board[i][j] = player
+
+    # Simulate capture: For each adjacent opponent stone, if its group has no liberties, remove it.
+    opponent = X_TYPE if player == O_TYPE else O_TYPE
+    directions = [(-1, 0), (1, 0), (0, 1), (0, -1)]
+    for dx, dy in directions:
+        nx, ny = i + dx, j + dy
+        if 0 <= nx < len(temp_board) and 0 <= ny < len(temp_board[0]):
+            if temp_board[nx][ny] == opponent:
+                if count_liberties(temp_board, nx, ny, opponent) == 0:
+                    group = get_group(temp_board, nx, ny, opponent)
+                    for (gx, gy) in group:
+                        temp_board[gx][gy] = 0  # Remove captured opponent stones.
+
+    # Check liberties for the group that now includes the new stone.
+    return count_liberties(temp_board, i, j, player) == 0
+
+def violates_ko(current_board, prev_board, move, player):
+    """
+    Examine if placing a stone at 'move' violates the KO rule by simulating the move.
+    The simulation includes:
+      - Placing the stone.
+      - Removing any adjacent opponent groups with no liberties (i.e., captures).
+    If the resulting board is identical to prev_board, then the move violates KO.
+    
+    :param current_board: 2D list representing the current board.
+    :param prev_board: 2D list representing the board from one move ago.
+    :param move: A tuple (i, j) representing the move, or "PASS".
+    :param player: The current player's piece type.
+    :return: True if the move violates KO, otherwise False.
+    """
+    if move == "PASS":
+        return False
+    
+    i, j = move
+    # Create a deep copy of the current board.
+    new_board = [row.copy() for row in current_board]
+    # Place the stone.
+    new_board[i][j] = player
+
+    # Determine the opponent's piece type.
+    opponent = X_TYPE if player == O_TYPE else O_TYPE
+
+    # For each adjacent cell, check if it belongs to an opponent group that should be captured.
+    directions = [(-1, 0), (1, 0), (0, 1), (0, -1)]
+    for dx, dy in directions:
+        nx, ny = i + dx, j + dy
+        if 0 <= nx < len(new_board) and 0 <= ny < len(new_board[0]):
+            if new_board[nx][ny] == opponent:
+                # If this opponent group has no liberties, capture it.
+                if count_liberties(new_board, nx, ny, opponent) == 0:
+                    group = get_group(new_board, nx, ny, opponent)
+                    for (gx, gy) in group:
+                        new_board[gx][gy] = 0
+
+    # Compare the resulting board to the previous board.
+    return new_board == prev_board
+
+
+def get_all_legal_moves(curr_board, prev_board, player):
+    """
+    Returns all legal moves for the player given the current and previous board.
+    """
+    legal_moves = []
+    board_size = len(curr_board)
+    for i in range(board_size):
+        for j in range(len(curr_board[0])):
+            if curr_board[i][j] == 0:
+                if (not is_suicide(curr_board, i, j, player)) and (not violates_ko(curr_board, prev_board, (i, j), player)):
+                    legal_moves.append((i, j))
+    legal_moves.append("PASS")
+    return legal_moves
 
 ################################### Definition of Agent ##################################
+
+class QLearningAgent():
+    def __init__(self, epsilon=0.5, alpha=0.1, piece_type=X_TYPE):
+        # action order for ith round:
+        # before this round: agent action i - 1, opponent action i - 1
+        #  agent action i, opponent action i
+        self.epsilon = epsilon
+        self.alpha = alpha
+        self.piece_type = piece_type
+        self.q_table = {}
+        self.prev_board = None # board directly after the agent's last action (this is what we are looking at when we are picking a move)
+        self.curr_board = None # board directly after the opponent's last action (input of select_move)
+        self.last_action = None # Used to determine if reward update is valid
+
+    def load_cur_state(self, dir="input.txt"):
+        _, prev_board, curr_board = parse_input(dir)
+        self.curr_board = curr_board
+        self.prev_board = prev_board
+        pass
+
+    def take_action(self):
+        pass
+
+    def update_q_value(self, state, action, reward, next):
+        """
+        input: 
+        """
+        pass
+
+    def reward(self, state, action):
+        """
+        should this be a global function instead?
+        """
+        pass
 # doesn't need to worry about other util functions, only worry about how things are calculated
 if __name__ == "__main__":
-    test_input_1 = [
-        "1",
-        "00000", "00000", "00000", "00000", "00000",  # prev_board
-        "00000", "00000", "00000", "00000", "00000"  # curr_board
+    print("---------- Testing get_all_legal_moves ----------")
+    # Test 1: Empty board should yield 25 moves plus "PASS"
+    empty_board = [[0]*5 for _ in range(5)]
+    moves_empty = get_all_legal_moves(empty_board, empty_board, 1)
+    print("Empty board legal moves count (expected 26):", len(moves_empty))
+    
+    # Test 2: Suicide situation
+    suicide_board = [
+        [1, 1, 0, 0, 0],
+        [1, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0]
     ]
-
-    # 测试案例2：已有棋子的棋盘
-    test_input_2 = [
-        "2",
-        "00110", "00210", "00200", "02000", "00000",  # prev_board
-        "00110", "00210", "00200", "02010", "00000"  # curr_board
+    moves_suicide = get_all_legal_moves(suicide_board, suicide_board, 1)
+    print("Is (2,2) legal on suicide board? Expected True, Got:", (2,2) in moves_suicide)
+    print("Is (1,1) legal on suicide board? Expected True, Got:", (1,1) in moves_suicide)
+    
+    # Test 3: KO rule test
+    prev_ko_board = [
+        [0, 2, 1, 0, 0],
+        [2, 0, 2, 1, 0],
+        [0, 2, 1, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0]
     ]
-
-    # 生成测试文件
-    with open("test_input_1.txt", 'w') as f:
-        f.write("\n".join(test_input_1))
-
-    # 解析测试
-    try:
-        player, prev_board, curr_board = parse_input("test_input_1.txt")
-        print(f"Player: {player}")
-        print("Previous Board:")
-        for row in prev_board: print(row)
-        print("\nCurrent Board:")
-        for row in curr_board: print(row)
-
-        # 测试写入
-        write_move((2, 3))  # 正常坐标
-        write_move("PASS")  # 放弃
-        # write_move((5,0))  # 会触发异常
-    except Exception as e:
-        print(f"Test Error: {e}")
+    curr_ko_board = [
+        [0, 2, 1, 0, 0],
+        [2, 1, 0, 1, 0],
+        [0, 2, 1, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0]
+    ]
+    moves_ko = get_all_legal_moves(curr_ko_board, prev_ko_board, 2)
+    print("For KO test, is (1,2) legal? Expected False, Got:", (1,2) in moves_ko)
+    
+    print("\n---------- Testing board_to_key and key_to_board ----------")
+    # Create test boards.
+    test_prev_board = [
+        [0, 1, 2, 0, 0],
+        [1, 0, 2, 1, 0],
+        [0, 0, 1, 0, 0],
+        [0, 2, 0, 1, 0],
+        [0, 0, 0, 0, 1]
+    ]
+    test_curr_board = [
+        [0, 1, 2, 0, 0],
+        [1, 2, 2, 1, 0],
+        [0, 0, 1, 0, 0],
+        [0, 2, 0, 1, 0],
+        [0, 0, 0, 0, 1]
+    ]
+    test_piece_type = 1
+    key = board_to_key(test_prev_board, test_curr_board, test_piece_type)
+    print("State key:", key)
+    decoded_prev, decoded_curr, decoded_piece = key_to_board(key)
+    print("Decoded previous board:", decoded_prev)
+    print("Decoded current board:", decoded_curr)
+    print("Decoded piece type:", decoded_piece)
+    
+    # Validate that the decoded boards and piece type match the originals.
+    assert test_prev_board == decoded_prev, "Decoded previous board does not match original."
+    assert test_curr_board == decoded_curr, "Decoded current board does not match original."
+    assert test_piece_type == decoded_piece, "Decoded piece type does not match original."
+    print("Board encoding/decoding test passed.")
+    
+    print("\n---------- Testing get_group and count_liberties ----------")
+    # Test a simple board for get_group.
+    group_board = [
+        [1, 1, 0, 0, 0],
+        [1, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0]
+    ]
+    group = get_group(group_board, 0, 0, 1)
+    print("Group starting at (0,0):", group)
+    liberties = count_liberties(group_board, 0, 0, 1)
+    print("Liberties of the group at (0,0):", liberties)
+    
+    print("\n---------- Testing QLearningAgent Initialization ----------")
+    agent = QLearningAgent(epsilon=0.5, alpha=0.1, piece_type=X_TYPE)
+    print("Agent initialized with epsilon =", agent.epsilon, "alpha =", agent.alpha, "piece_type =", agent.piece_type)
+    print("Initial Q-table:", agent.q_table)
+    
+    print("\n---------- All tests executed successfully ----------")
