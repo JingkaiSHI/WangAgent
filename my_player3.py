@@ -1,4 +1,5 @@
 import math
+import random
 X_TYPE = 1
 O_TYPE = 2
 
@@ -42,16 +43,15 @@ def write_move(move):
     except Exception as e:
         raise RuntimeError(f"Failed to write output: {str(e)}")
     
-def board_to_key(prev_board, curr_board, piece_type):
+def board_to_key(curr_board, piece_type):
     """
     Convert board to a string key for the Q-table.
     :param piece_type: the type of piece we are having
     :param board: the board
     :return: encoded version of board, length is 26: first 25 chars for the state, last char for piece type
     """
-    result = ''.join(''.join(str(cell) for cell in row) for row in prev_board)
     cur_result = ''.join(''.join(str(cell) for cell in row) for row in curr_board)
-    result = result + cur_result + str(piece_type)
+    result = cur_result + str(piece_type)
     return result
 
 
@@ -59,7 +59,6 @@ def key_to_board(state):
     """
     Convert a state key back to the previous board, current board, and piece type.
     The state key is constructed as:
-      [prev_board (board_size^2 characters)] +
       [curr_board (board_size^2 characters)] +
       [piece_type (1 character)]
     
@@ -70,19 +69,12 @@ def key_to_board(state):
     """
     total_len = len(state)
     # Compute board_size^2: total length minus one for piece type, divided by 2.
-    board_size_sq = (total_len - 1) // 2
+    board_size_sq = (total_len - 1)
     board_size = int(math.sqrt(board_size_sq))
     
     # Extract the previous board part, current board part, and piece type.
-    prev_board_str = state[:board_size_sq]
-    curr_board_str = state[board_size_sq:2 * board_size_sq]
+    curr_board_str = state[0:board_size_sq]
     piece_type = int(state[-1])
-    
-    # Reconstruct the previous board as a 2D list.
-    prev_board = []
-    for i in range(board_size):
-        row = [int(prev_board_str[i * board_size + j]) for j in range(board_size)]
-        prev_board.append(row)
     
     # Reconstruct the current board as a 2D list.
     curr_board = []
@@ -90,7 +82,7 @@ def key_to_board(state):
         row = [int(curr_board_str[i * board_size + j]) for j in range(board_size)]
         curr_board.append(row)
     
-    return prev_board, curr_board, piece_type
+    return curr_board, piece_type
 
 
 # Maybe we need 2 variation of this function to make things faster
@@ -223,38 +215,146 @@ def get_all_legal_moves(curr_board, prev_board, player):
 ################################### Definition of Agent ##################################
 
 class QLearningAgent():
-    def __init__(self, epsilon=0.5, alpha=0.1, piece_type=X_TYPE):
+    def __init__(self, epsilon=0.5, alpha=0.1, gamma=0.8, piece_type=X_TYPE):
         # action order for ith round:
         # before this round: agent action i - 1, opponent action i - 1
         #  agent action i, opponent action i
         self.epsilon = epsilon
         self.alpha = alpha
+        self.gamma = gamma
         self.piece_type = piece_type
         self.q_table = {}
         self.prev_board = None # board directly after the agent's last action (this is what we are looking at when we are picking a move)
         self.curr_board = None # board directly after the opponent's last action (input of select_move)
         self.last_action = None # Used to determine if reward update is valid
+        self.reward = None
+        self.next_state = None
 
     def load_cur_state(self, dir="input.txt"):
         _, prev_board, curr_board = parse_input(dir)
         self.curr_board = curr_board
         self.prev_board = prev_board
-        pass
 
     def take_action(self):
-        pass
+        """
+        accessible information: 
+        self.curr_board
+        self.prev_board
+        self.q_table
+        self.epsilon
+        we have the prev_board and curr_board updated, do the following:
+        1. get all legal moves (simple function call)
+        2. encode current state to index the q table
+        3. update the q_table arbitrarilly if the state is not encountered at all
+        4. select action based on current epsilon
+            - random if explore (without "PASS" as an option)
+            - best option if exlpoit
+        5. write action to output.txt
+        """
+        action = None
+        # implement action choice logic (missing)
+        legal_moves = get_all_legal_moves(self.curr_board, self.prev_board, self.piece_type)
+        legal_moves_no_pass = [move for move in legal_moves if move != "PASS"]
+        if legal_moves == ["PASS"]:
+            action = "PASS"
+        else:
+            state_key = board_to_key(self.curr_board, self.piece_type)
+            if state_key not in self.q_table:
+                self.q_table[state_key] = {}
+                for move in legal_moves:
+                    self.q_table[state_key][move] = 0.0
+            
+            if random.random() < self.epsilon:
+                action = random.choice(legal_moves_no_pass)
+            else:
+                q_vals = self.q_table[state_key]
+                best_val = -float("inf")
+                best_moves = []
+                for move in legal_moves:
+                    val = q_vals.get(move, 0.0)
+                    if val > best_val:
+                        best_val = val
+                        best_moves = [move]
+                    elif val == best_val:
+                        best_moves.append(move)
+                action = random.choice(best_moves) if best_moves else random.choice(legal_moves)
+        write_move(action)
+        self.last_action = action
+    
+    def observe_world(self):
+        """
+        Observe the world, update current reward and s' for the formula
+        s' is the result from a with the opponent's movement
+        s is the result right after we exerted a on the board
+        compute reward r from s' and s with a
 
-    def update_q_value(self, state, action, reward, next):
+        returns:
+        nothing, updates reward and next_state parameter in place
+        condition of this function getting called:
+        right after opponents makes some move, and we have made some move previously
+        accessible information:
+        - current state of the board: direct effect after last opponent move
+        - previous state of the board: the state of the board before our last action, stored in self.prev_board
+        - last action taken at self.last_action
+        Heuristic to follow while calculating reward:
+        - maximize liberty
+        - maximize territory
+        - connecting stones
+        - making eyes: number of eyes * reward for forming an eye
+        
         """
-        input: 
-        """
-        pass
+        #implement the world observation logic (missing)
+        def evaluate_board(board, player):
+            visited = set()
+            territory = 0
+            total_liberties = 0
+            board_size = len(board)
+            for i in range(board_size):
+                for j in range(board_size):
+                    if board[i][j] == player and (i, j) not in visited:
+                        territory += 1
+                        group = get_group(board, i, j, player)
+                        visited.update(group)
+                        liberties = count_liberties(board, i, j, player)
+                        total_liberties += liberties
+            return territory + 0.5 * total_liberties
+        
+        s_value = evaluate_board(self.prev_board, self.piece_type)
+        s_prime_value = evaluate_board(self.curr_board, self.piece_type)
+        r = s_prime_value - s_value
+        self.reward = r
+        s_prime_encoded = board_to_key(self.curr_board, self.piece_type)
+        self.next_state = s_prime_encoded
 
-    def reward(self, state, action):
+    def update_q_value(self):
         """
-        should this be a global function instead?
+        implement the formula
+        Q(s, a) -> Q(s, a) + learning_rate * (reward + gamma * max(a'){Q(s', a')} - Q(s, a))
+        in this case:
+        s: prev_board in parse_input
+        s':curr_board in parse_input
+        r: pre-calculated value that is updated by observe_world
+        max(a'){Q(s', a')}: index into all legal action for s'
+        # Realization moment: Hangon... do we actually need the prev board as part of the encoding?
         """
-        pass
+        # implements the logic of updating Q value function (missing)
+        if self.prev_board is None or self.last_action is None or self.reward is None:
+            return
+        s = self.prev_board
+        a = self.last_action
+        r = self.reward
+        next_state = self.next_state
+        curr_s = board_to_key(s, self.piece_type)
+
+        if next_state not in self.q_table:
+            legal_moves = get_all_legal_moves(self.curr_board, self.prev_board, self.piece_type)
+            self.q_table[next_state] = {move: 0.0 for move in legal_moves}
+        
+        max_next_q = max(self.q_table[next_state].values()) if self.q_table[next_state] else 0.0
+        current_q = self.q_table[curr_s].get(a, 0.0)
+        new_q = current_q + self.alpha * (r + self.gamma * max_next_q - current_q)
+        self.q_table[curr_s][a] = new_q
+
 # doesn't need to worry about other util functions, only worry about how things are calculated
 if __name__ == "__main__":
     print("---------- Testing get_all_legal_moves ----------")
@@ -295,13 +395,6 @@ if __name__ == "__main__":
     
     print("\n---------- Testing board_to_key and key_to_board ----------")
     # Create test boards.
-    test_prev_board = [
-        [0, 1, 2, 0, 0],
-        [1, 0, 2, 1, 0],
-        [0, 0, 1, 0, 0],
-        [0, 2, 0, 1, 0],
-        [0, 0, 0, 0, 1]
-    ]
     test_curr_board = [
         [0, 1, 2, 0, 0],
         [1, 2, 2, 1, 0],
@@ -310,15 +403,13 @@ if __name__ == "__main__":
         [0, 0, 0, 0, 1]
     ]
     test_piece_type = 1
-    key = board_to_key(test_prev_board, test_curr_board, test_piece_type)
+    key = board_to_key(test_curr_board, test_piece_type)
     print("State key:", key)
-    decoded_prev, decoded_curr, decoded_piece = key_to_board(key)
-    print("Decoded previous board:", decoded_prev)
+    decoded_curr, decoded_piece = key_to_board(key)
     print("Decoded current board:", decoded_curr)
     print("Decoded piece type:", decoded_piece)
     
     # Validate that the decoded boards and piece type match the originals.
-    assert test_prev_board == decoded_prev, "Decoded previous board does not match original."
     assert test_curr_board == decoded_curr, "Decoded current board does not match original."
     assert test_piece_type == decoded_piece, "Decoded piece type does not match original."
     print("Board encoding/decoding test passed.")
