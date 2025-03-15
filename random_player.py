@@ -9,17 +9,12 @@ class RandomPlayer:
 
     def load_cur_state(self, input_file="input.txt"):
         self.player, self.prev_board, self.curr_board = parse_input(input_file)
+        # print("random player's piece_type:", self.player)
 
     def select_move(self):
         legal_moves = get_all_legal_moves(self.curr_board, self.prev_board, self.player)
-
-        if not legal_moves:
-            return "PASS"
-        print(legal_moves)
-        filtered_moves = [move for move in legal_moves if move != "PASS" and not self._is_fully_surrounded(move)]
-        if not filtered_moves:
-            return "PASS"
-        return random.choice(filtered_moves)
+        action = random.choice(legal_moves)
+        write_move(action)
 
     def _is_fully_surrounded(self, move):
         if move == "PASS":
