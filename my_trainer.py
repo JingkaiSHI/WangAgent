@@ -1,29 +1,8 @@
-from my_player3 import X_TYPE, O_TYPE, QLearningAgent, write_move, parse_input, get_group, count_liberties
-from random_player import RandomPlayer
+from my_player3 import X_TYPE, O_TYPE
+from go_helper import parse_input, count_liberties, get_group, read_output
 import time
 import pickle
 import numpy as np
-
-def read_output(output_dir="output.txt"):
-    """
-    returns the current move writen in output.txt
-    can be either:
-    a coordinate in tuple (row, col)
-    or:
-    PASS as str
-    """
-    try:
-        with open(output_dir, 'r') as f:
-            lines = [line.strip() for line in f.readlines()]
-            assert len(lines) == 1
-            only_line = lines[0]
-            if only_line == "PASS":
-                return "PASS"
-            coordinates = only_line.split(',')
-            assert len(coordinates) == 2
-            return int(coordinates[0]), int(coordinates[1])
-    except Exception as e:
-        raise RuntimeError(f"Input Parsing Failed: {str(e)}")
 
 class trainer:
     def __init__(self, player, opponent, board_dir="input.txt", action_dir="output.txt", num_episodes=1000, step_limit=24, komi=2.5):

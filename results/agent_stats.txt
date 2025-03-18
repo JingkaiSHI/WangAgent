@@ -1,4 +1,4 @@
-min_weight: -8.046545770634324
-max_weight: 13.287792070714827
-avg_weight: 0.7046698022605179
-feature_count: 16
+min_weight: -4.329438943137732
+max_weight: 4.9765350159706525
+avg_weight: 0.24281561980591157
+feature_count: 20
