@@ -4,6 +4,8 @@ import copy
 from random_player import RandomPlayer
 from my_player3 import X_TYPE, O_TYPE
 from go_helper import get_group, count_liberties, get_all_legal_moves, parse_input, write_move
+from host import GO
+from read import readInput
 
 def create_pattern_opponent():
     """Create a smarter rule-based opponent"""
@@ -98,6 +100,10 @@ def create_self_play_opponent(agent):
     def select_move(self):
         """Adapter method with added randomization for diversity"""
         # Sometimes (10% of time) make a completely random legal move
+        N = 5
+        piece_type, previous_board, board = readInput(N)
+        go = GO(N)
+        go.set_board(piece_type, previous_board, board)
         if random.random() < 0.1:  # Add true randomness to break out of self-play patterns
             piece_type, prev_board, board = parse_input()
             moves = get_all_legal_moves(board, prev_board, piece_type)
@@ -110,14 +116,14 @@ def create_self_play_opponent(agent):
             return
             
         # Otherwise use agent logic
-        self.take_action()
+        self.take_action(go)
     
     # Attach the adapter method
     self_play_agent.select_move = types.MethodType(select_move, self_play_agent)
     
     return self_play_agent
 
-def create_mixed_opponent(agent, random_weight=0.5, greedy_weight=0.15, pattern_weight=0.25, self_play_weight=0.1):
+def create_mixed_opponent(agent, random_weight=0.2, greedy_weight=0.2, pattern_weight=0.2, tactical_weight=0.3, self_play_weight=0.1):
     """Creates an opponent that randomly switches between different strategies"""
     # Create the different opponent types
     random_opp = RandomPlayer()
@@ -125,6 +131,10 @@ def create_mixed_opponent(agent, random_weight=0.5, greedy_weight=0.15, pattern_
     
     pattern_opp = create_pattern_opponent()
     pattern_opp.player = O_TYPE
+    
+    tactical_opp = create_tactical_opponent()
+    tactical_opp.player = O_TYPE
+    
     
     # Create a noisy version of the agent for self-play that's much more random
     self_play_opp = create_self_play_opponent(agent)
@@ -185,9 +195,10 @@ def create_mixed_opponent(agent, random_weight=0.5, greedy_weight=0.15, pattern_
     class MixedOpponent:
         def __init__(self):
             self.opponents = [
-                ("random", random_opp, random_weight),     # 50% random play - crucial for generalization
-                ("pattern", pattern_opp, pattern_weight),   # 25% pattern-based play
-                ("aggressive", aggressive_opp, greedy_weight),  # 15% aggressive play
+                ("random", random_opp, random_weight),     # 20% random play - crucial for generalization
+                ("pattern", pattern_opp, pattern_weight),   # 20% pattern-based play
+                ("tactical", tactical_opp, tactical_weight), # 30% tactical play
+                ("aggressive", aggressive_opp, greedy_weight),  # 20% aggressive play
                 ("self", self_play_opp, self_play_weight)     # Only 10% self-play
             ]
             self.current = self.opponents[0][1]
@@ -285,4 +296,149 @@ def create_greedy_opponent():
         write_move(chosen_move)
     
     player.select_move = types.MethodType(greedy_select_move, player)
+    return player
+
+def create_tactical_opponent():
+    """Creates an opponent specialized in tactical situations (captures, ataris, ko threats)"""
+    player = RandomPlayer()
+    
+    def tactical_select_move(self):
+        """Select moves with emphasis on tactical patterns and sequences"""
+        piece_type, prev_board, board = parse_input()
+        self.piece_type = piece_type
+        opponent = 3 - piece_type
+        
+        moves = get_all_legal_moves(board, prev_board, piece_type)
+        if not moves or moves == ["PASS"]:
+            write_move("PASS")
+            return
+            
+        # Score moves based on tactical considerations
+        scored_moves = []
+        for move in moves:
+            if move == "PASS":
+                scored_moves.append((move, -10))  # Discourage passing
+                continue
+                
+            i, j = move
+            score = 0
+            temp_board = [row.copy() for row in board]
+            temp_board[i][j] = piece_type
+            
+            # 1. Immediate captures
+            capture_count = 0
+            for di, dj in [(-1,0), (1,0), (0,-1), (0,1)]:
+                ni, nj = i + di, j + dj
+                if 0 <= ni < 5 and 0 <= nj < 5 and board[ni][nj] == opponent:
+                    if count_liberties(temp_board, ni, nj, opponent) == 0:
+                        group = get_group(board, ni, nj, opponent)
+                        capture_count += len(group)
+            
+            score += capture_count * 8  # High but not overwhelming priority
+            
+            # 2. Connect own stones - tactical grouping
+            connect_count = 0
+            for di, dj in [(-1,0), (1,0), (0,-1), (0,1)]:
+                ni, nj = i + di, j + dj
+                if 0 <= ni < 5 and 0 <= nj < 5 and board[ni][nj] == piece_type:
+                    connect_count += 1
+            
+            # Connecting to existing stones, but avoid clumps
+            if connect_count > 0:
+                # Encourage connections to 1-2 stones, discourage more than that
+                if connect_count <= 2:
+                    score += 3 * connect_count
+                else:
+                    score -= (connect_count - 2) * 2
+            
+            # 3. Create eye shapes - critical for survival
+            eye_score = 0
+            
+            # Check if this move creates or defends an eye
+            diagonals = [(-1,-1), (-1,1), (1,-1), (1,1)]
+            
+            # First check standard eye shape (4 same-color stones surrounding empty space)
+            for di, dj in diagonals:
+                corner_i, corner_j = i + di, j + dj
+                if 0 <= corner_i < 5 and 0 <= corner_j < 5:
+                    # Check if corner makes an eye with this move
+                    surrounding = 0
+                    empty = 0
+                    
+                    # Check surrounding points
+                    for d2i, d2j in [(-1,0), (1,0), (0,-1), (0,1)]:
+                        si, sj = corner_i + d2i, corner_j + d2j
+                        if 0 <= si < 5 and 0 <= sj < 5:
+                            if board[si][sj] == piece_type or (si == i and sj == j):
+                                surrounding += 1
+                            elif board[si][sj] == 0:
+                                empty += 1
+                    
+                    if surrounding >= 3 and empty == 1:
+                        eye_score += 4
+            
+            score += eye_score
+            
+            # 4. Cut opponent stones - tactical separation
+            cut_score = 0
+            # Identify if move cuts opponent stones
+            for d1 in [(-1,0), (0,-1)]:
+                n1i, n1j = i + d1[0], j + d1[1]
+                n2i, n2j = i - d1[0], j - d1[1]
+                
+                if (0 <= n1i < 5 and 0 <= n1j < 5 and 
+                    0 <= n2i < 5 and 0 <= n2j < 5 and
+                    board[n1i][n1j] == opponent and 
+                    board[n2i][n2j] == opponent):
+                    
+                    # Check if we're cutting a connection
+                    if count_liberties(temp_board, n1i, n1j, opponent) != count_liberties(board, n1i, n1j, opponent):
+                        cut_score += 3
+            
+            score += cut_score
+            
+            # 5. Atari opponent stones
+            atari_count = 0
+            for di, dj in [(-1,0), (1,0), (0,-1), (0,1)]:
+                ni, nj = i + di, j + dj
+                if 0 <= ni < 5 and 0 <= nj < 5 and board[ni][nj] == opponent:
+                    if count_liberties(board, ni, nj, opponent) > 1:
+                        if count_liberties(temp_board, ni, nj, opponent) == 1:
+                            atari_count += 1
+            
+            score += atari_count * 2.5
+            
+            # 6. Avoid self-atari unless capturing
+            if capture_count == 0 and count_liberties(temp_board, i, j, piece_type) <= 1:
+                score -= 5
+            
+            scored_moves.append((move, score))
+        
+        # Choose the highest-scored move with some randomization
+        # Sort by score
+        scored_moves.sort(key=lambda x: x[1], reverse=True)
+        
+        # 80% pick from top 3 moves, 20% pick weighted random from all moves
+        if scored_moves and random.random() < 0.8:
+            # Take top 3 moves (or fewer if we don't have 3)
+            top_n = min(3, len(scored_moves))
+            chosen_move = scored_moves[random.randint(0, top_n-1)][0]
+        else:
+            # Weighted random selection
+            total = sum(max(0.1, s) for _, s in scored_moves)
+            r = random.uniform(0, total)
+            upto = 0
+            for move, score in scored_moves:
+                if score < 0:
+                    score = 0.1
+                upto += score
+                if upto >= r:
+                    chosen_move = move
+                    break
+            else:
+                chosen_move = scored_moves[0][0] if scored_moves else "PASS"
+        
+        write_move(chosen_move)
+    
+    player.select_move = types.MethodType(tactical_select_move, player)
     return player

@@ -75,10 +75,70 @@ def extract_state_features(board, piece_type):
                     territory += 0.2  # Scale down from the original
                 elif opp_adjacent > 0 and my_adjacent == 0:
                     territory -= 0.2  # Scale down from the original
+    # detect stones with 2 liberties
+    my_pre_atari = 0
+    opp_pre_atari = 0
+    # detect potential group split
+    my_cutting_points = 0
+    opp_cutting_points = 0
+    # detect opponent group vulnerability
+    # detect potential for creating eyes
+    my_eye_potential = 0
+    opp_eye_potential = 0
     
-    # Color indicator - removed intentionally
+    for i in range(5):
+        for j in range(5):
+            if board[i][j] == piece_type:
+                libs = count_liberties(board, i, j, piece_type)
+                if libs == 2:
+                    my_pre_atari += 1
+            elif board[i][j] == opponent:
+                libs = count_liberties(board, i, j, opponent)
+                if libs == 2:
+                    opp_pre_atari += 1
+            elif board[i][j] == 0:
+                my_neighbors = 0
+                opp_neighbors = 0
+                for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    ni, nj = i + di, j + dj
+                    if 0 <= ni < 5 and 0 <= nj < 5:
+                        if board[ni][nj] == piece_type:
+                            my_neighbors += 1
+                        elif board[ni][nj] == opponent:
+                            opp_neighbors += 1
+                if my_neighbors >= 3:
+                    my_eye_potential += my_neighbors * 0.25
+                if opp_neighbors >= 3:
+                    opp_eye_potential += opp_neighbors * 0.25
+                
+                if my_neighbors >= 2:
+                    found_groups = set()
+                    for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        ni, nj = i + di, j + dj
+                        if 0 <= ni < 5 and 0 <= nj < 5 and board[ni][nj] == piece_type:
+                            group = frozenset(get_group(board, ni, nj, piece_type))
+                            found_groups.update(group)
+                    if len(found_groups) >= 2:
+                        my_cutting_points += 1
+                if opp_neighbors >= 2:
+                    found_groups = set()
+                    for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        ni, nj = i + di, j + dj
+                        if 0 <= ni < 5 and 0 <= nj < 5 and board[ni][nj] == opponent:
+                            group = frozenset(get_group(board, ni, nj, opponent))
+                            found_groups.update(group)
+                    if len(found_groups) >= 2:
+                        opp_cutting_points += 1
     
-    return np.array([
+    # Normalize features
+    my_pre_atari /= 5.0
+    opp_pre_atari /= 5.0
+    my_cutting_points /= 5.0
+    opp_cutting_points /= 5.0
+    my_eye_potential /= 5.0
+    opp_eye_potential /= 5.0
+                
+    features = np.array([
         my_pieces, 
         opponent_pieces,
         center_mine, 
@@ -92,8 +152,16 @@ def extract_state_features(board, piece_type):
         float(my_groups) / 5.0,
         center_control,
         corners_control,
-        territory / 5.0  # Normalized territory
+        territory / 5.0,  # Normalized territory
+        my_pre_atari,   # detect stones with 2 liberties
+        opp_pre_atari,   # detect potential group split
+        my_cutting_points,# detect opponent group vulnerability
+        opp_cutting_points,
+        my_eye_potential,
+        opp_eye_potential
     ])
+    
+    return normalize_features(features)
 
 
 def extract_action_features(board, action, player):
@@ -102,7 +170,7 @@ def extract_action_features(board, action, player):
         # For PASS moves, return special features
         stones_diff = sum(row.count(player) for row in board) - sum(row.count(3-player) for row in board)
         # Pass feature: only encourage passing when ahead or in very late game
-        return np.array([0.0, 0.0, 0.0, 0.0, float(stones_diff > 2), 0.0])
+        return np.array([0.0, 0.0, 0.0, 0.0, float(stones_diff > 2), 0.0, 0.0, 0.0])
     
     i, j = action
     opponent = 3 - player
@@ -130,11 +198,42 @@ def extract_action_features(board, action, player):
     is_middle = 1.0 if (0 < i < 4 and 0 < j < 4) else 0.0  # Middle area
     is_corner = 1.0 if (i, j) in [(0,0), (0,4), (4,0), (4,4)] else 0.0  # Corner
     
-    return np.array([
+    self_atari = 1.0 if liberty <= 0.25 else 0.0  # Self-atari if the move creates a group with 1 liberty
+    
+    protects_vulnerable = 0.0
+    for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        ni, nj = i + di, j + dj
+        if 0 <= ni < 5 and 0 <= nj < 5 and board[ni][nj] == player:
+            if count_liberties(temp_board, ni, nj, player) == 2:
+                libs_after = count_liberties(temp_board, ni, nj, player)
+                if libs_after > 2:
+                    protects_vulnerable = 1.0
+                    break
+    
+    features = np.array([
         float(captures) / 5.0,
         liberty,
         connects,
         is_center,
         is_middle,
-        is_corner
+        is_corner,
+        self_atari,
+        protects_vulnerable
     ])
+    return features
+    
+
+def normalize_features(features):
+    """Scale material features to prevent them from dominating."""
+    # Scale down material-counting features
+    features[0] /= 5.0  # Player_Stones
+    features[1] /= 5.0  # Opponent_Stones
+    features[4] /= 3.0  # Player_Groups
+    features[5] /= 3.0  # Opponent_Groups
+    
+    # Scale up positional features
+    features[6] *= 2.0  # Center_Control
+    features[7] *= 2.0  # Edge_Control
+    features[8] *= 2.0  # Corner_Control
+    
+    return features

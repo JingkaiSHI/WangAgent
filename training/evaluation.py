@@ -2,10 +2,17 @@ from my_trainer import trainer
 from my_player3 import X_TYPE, O_TYPE
 from go_helper import parse_input
 from random_player import RandomPlayer
+from read import readInput
+from host import GO
 
-# Simple territory evaluation function:
 def evaluate_territory(board, player):
-    return sum(row.count(player) for row in board)
+    """Evaluate score properly by counting both stones and territory"""
+    opponent = 3 - player
+    
+    # Count stones
+    stone_score = sum(row.count(player) for row in board)
+    
+    return stone_score
 
 def play_game(agent, opponent, board_dir="input.txt", action_dir="output.txt", step_limit=24, komi=2.5):
     """
@@ -19,13 +26,18 @@ def play_game(agent, opponent, board_dir="input.txt", action_dir="output.txt", s
     game_trainer.reset_input()  # Assumes reset_input() is implemented as shown earlier.
     game_trainer.cur_step = step_limit
     game_trainer.game_end = False
+    agent.initiate_game()
 
     while not game_trainer.game_end:
         if agent.piece_type == X_TYPE:
             # Agent goes first.
             game_trainer.cur_piece = X_TYPE
+            N = 5
+            piece_type, previous_board, board = readInput(N)
+            go = GO(N)
+            go.set_board(piece_type, previous_board, board)
             agent.load_cur_state(board_dir)
-            agent.take_action()
+            agent.take_action(go)
             game_trainer.update_input()
             game_trainer.cur_step -= 1
 
@@ -43,8 +55,12 @@ def play_game(agent, opponent, board_dir="input.txt", action_dir="output.txt", s
             game_trainer.cur_step -= 1
 
             game_trainer.cur_piece = X_TYPE
+            N = 5
+            piece_type, previous_board, board = readInput(N)
+            go = GO(N)
+            go.set_board(piece_type, previous_board, board)
             agent.load_cur_state(board_dir)
-            agent.take_action()
+            agent.take_action(go)
             game_trainer.update_input()
             game_trainer.cur_step -= 1
         
@@ -57,7 +73,7 @@ def play_game(agent, opponent, board_dir="input.txt", action_dir="output.txt", s
     score_X = evaluate_territory(curr_board, X_TYPE)
     score_O = evaluate_territory(curr_board, O_TYPE)
     # Add komi bonus to White.
-    score_O += (komi if O_TYPE == O_TYPE else 0)
+    score_O += komi
 
     # Determine winner from the agent's perspective.
     if agent.piece_type == X_TYPE:
@@ -78,3 +94,70 @@ def assess_agent(agent, num_test_games=100):
     win_rate = wins / num_test_games
     print(f"Assessment: Agent win rate over {num_test_games} test games: {win_rate:.2f}")
     return win_rate
+
+# Add this function or replace any existing comprehensive_assessment
+
+def comprehensive_assessment(agent, num_test_games=25):
+    """
+    Comprehensive assessment of agent performance against multiple opponent types.
+    Tests both as BLACK and WHITE.
+    
+    Returns dict with detailed performance metrics.
+    """
+    from training.opponents import create_greedy_opponent, create_pattern_opponent
+    from random_player import RandomPlayer
+    
+    results = {}
+    opponent_types = [
+        ("Random", lambda: RandomPlayer()),
+        ("Greedy", lambda: create_greedy_opponent()),
+        ("Pattern", lambda: create_pattern_opponent())
+    ]
+    
+    print("\n===== Starting Comprehensive Assessment =====")
+    
+    # Test as BLACK against each opponent type
+    agent.piece_type = X_TYPE
+    for name, create_opp in opponent_types:
+        opponent = create_opp()
+        opponent.player = O_TYPE
+        wins = 0
+        
+        print(f"Testing as BLACK vs {name}...")
+        for _ in range(num_test_games):
+            wins += play_game(agent, opponent)
+        
+        win_rate = wins / num_test_games
+        results[f"Black vs {name}"] = win_rate
+        print(f"  Win rate: {win_rate:.2f}")
+    
+    # Test as WHITE against each opponent type
+    agent.piece_type = O_TYPE
+    for name, create_opp in opponent_types:
+        opponent = create_opp()
+        opponent.player = X_TYPE
+        wins = 0
+        
+        print(f"Testing as WHITE vs {name}...")
+        for _ in range(num_test_games):
+            wins += play_game(agent, opponent)
+        
+        win_rate = wins / num_test_games
+        results[f"White vs {name}"] = win_rate
+        print(f"  Win rate: {win_rate:.2f}")
+    
+    # Calculate overall metrics
+    black_win_rates = [results[k] for k in results if k.startswith("Black")]
+    white_win_rates = [results[k] for k in results if k.startswith("White")]
+    
+    results["Overall Black"] = sum(black_win_rates) / len(black_win_rates)
+    results["Overall White"] = sum(white_win_rates) / len(white_win_rates)
+    results["Overall"] = (results["Overall Black"] + results["Overall White"]) / 2
+    
+    print("\n===== Assessment Summary =====")
+    print(f"BLACK overall win rate: {results['Overall Black']:.2f}")
+    print(f"WHITE overall win rate: {results['Overall White']:.2f}")
+    print(f"COMBINED win rate:      {results['Overall']:.2f}")
+    print("=============================\n")
+    
+    return results["Overall"]

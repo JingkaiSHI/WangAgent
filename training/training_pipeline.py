@@ -1,4 +1,4 @@
-from training.evaluation import assess_agent
+from training.evaluation import comprehensive_assessment, assess_agent
 from training.agent_io import save_agent, load_agent
 from random_player import RandomPlayer
 from my_trainer import trainer
@@ -52,7 +52,7 @@ def progressive_training(agent):
     print("Phase 2: Training against greedy tactical opponent...")
     greedy_opponent = create_greedy_opponent()  # New function - defined below
     greedy_opponent.player = O_TYPE
-    trainer2 = trainer(agent, greedy_opponent, num_episodes=2500)
+    trainer2 = trainer(agent, greedy_opponent, num_episodes=2500, current_phase=2)
     trainer2.train()
 
     # Add these lines after trainer2.train()
@@ -76,7 +76,7 @@ def progressive_training(agent):
     print("Phase 3: Strategic self-play training...")
     self_play_opponent = create_self_play_opponent(agent)
     self_play_opponent.epsilon = 0.1  # Lower exploration - more strategic play
-    trainer3 = trainer(agent, self_play_opponent, num_episodes=1500)
+    trainer3 = trainer(agent, self_play_opponent, num_episodes=1500, current_phase=3)
     trainer3.train()
 
     # Add these lines after trainer3.train()
@@ -103,7 +103,7 @@ def progressive_training(agent):
                                           greedy_weight=0.3,   # 30% greedy
                                           pattern_weight=0.2,  # 20% pattern
                                           self_play_weight=0.1) # 10% self-play
-    trainer4 = trainer(agent, mixed_opponent, num_episodes=4000)
+    trainer4 = trainer(agent, mixed_opponent, num_episodes=4000, current_phase=4)
     trainer4.train()
 
     # Add these lines after trainer4.train()

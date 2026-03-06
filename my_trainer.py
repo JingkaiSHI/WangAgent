@@ -3,9 +3,13 @@ from go_helper import parse_input, count_liberties, get_group, read_output
 import time
 import pickle
 import numpy as np
+import os
+from log_module import TrainingLogger
+from read import readInput
+from host import GO
 
 class trainer:
-    def __init__(self, player, opponent, board_dir="input.txt", action_dir="output.txt", num_episodes=1000, step_limit=24, komi=2.5):
+    def __init__(self, player, opponent, board_dir="input.txt", action_dir="output.txt", num_episodes=1000, step_limit=24, komi=2.5, current_phase=1):
         self.num_episodes = num_episodes
         self.agent = player
         self.opponent = opponent
@@ -32,6 +36,10 @@ class trainer:
         self.episode_rewards = []
         self.epsilon_history = []
         self.q_stats_history = {'max_q': [], 'min_q': [], 'avg_q': []}
+        
+        self.logger = TrainingLogger()
+        self.log_frequency = 100
+        self.current_phase = current_phase
 
     def save_training_data(self):
         training_data = {
@@ -62,116 +70,237 @@ class trainer:
                 f.write(row + "\n")
 
     def train(self):
+        """Train the agent for the specified number of episodes."""
+        # Setup training
         start_time = time.time()
         total_episodes = self.num_episodes
         print(f"Training started for {total_episodes} episodes.")
+        
+        # Disable MCTS for training speed
+        if hasattr(self.agent, 'use_mcts'):
+            self.agent.use_mcts = False
+        
+        # Main training loop
         while self.num_episodes > 0:
-            if self.num_episodes % 10 == 0:
-                elapsed_time = time.time() - start_time
-                progress = (total_episodes - self.num_episodes) / total_episodes
-                ets = elapsed_time / progress - elapsed_time if progress > 0 else 0
-                bar_length = 30
-                filled_length = int(bar_length * progress)
-                bar = '█' * filled_length + '-' * (bar_length - filled_length)
-                print(f"\rTraining Progress: |{bar}| {progress:.2%} complete. Elapsed time: {elapsed_time:.2f}s. Estimated time remaining: {ets:.2f}s.", end='')
-            # setup new game
-            # initialize new game
-            self.cur_step = self.step_limit
-            self.game_end = False
-            self.agent_pass = False
-            self.opponent_pass = False
-            self.invalid_move = False
-            self.agent.initiate_game()
-            self.reset_input()
+            # Display progress bar
+            self._display_progress(start_time, total_episodes)
+            
+            # Initialize episode
+            episode_data = self._setup_episode()
+            
+            # Game loop
             while not self.game_end:
-                if self.agent.piece_type == X_TYPE:
-                    # agent goes first
-                    # agent take action (change signature later!)
-                    self.cur_piece = X_TYPE
-                    # sets the current agent's inner state to properly align with the board
-                    # Caveat: during grading/submission, make sure you call it from take_action, modify take_action to match the signature online
-                    # nothing needs to be done now as it is just training locally.
-                    self.agent.load_cur_state(self.board_dir)
-                    # now with the properly loaded inner state information gathered, time to make a decision
-                    self.agent.take_action()
-                    # decision is written into output, time to update the input for the new board state (or fail to update due to invalid move selected)
-                    self.update_input()
-                    #print("agent has placed his input")
-                    # decrement step count after updating the input
-                    self.cur_step -= 1
-                    # opponent take action
-                    self.cur_piece = O_TYPE
-                    # sets the current agent's inner state to properly align with the board
-                    self.opponent.load_cur_state(self.board_dir)
-                    self.opponent.select_move()
-                    self.cur_step -= 1
-                    self.update_input()
-                    # agent observe reward, current state, update q value
-                    # agent observe effect of its action and the world
-                    self.agent.observe_world()
-                    self.agent.update_q_value()
-                else:
-                    self.cur_piece = O_TYPE
-                    self.opponent.load_cur_state(self.board_dir)
-                    self.opponent.select_move()
-                    self.cur_step -= 1
-                    self.update_input()
-                    if self.agent.last_action is not None:
-                        self.agent.update_q_value()
-                    self.cur_piece = X_TYPE
-                    self.agent.load_cur_state(self.board_dir)
-                    self.agent.take_action()
-                    self.cur_step -= 1
-                    self.update_input()
-                # determine if the game should end
+                self._play_turn(episode_data)
+                
+                # Check for game end
                 if not self.game_end:
                     self.game_end = self.should_end()
                     if self.game_end:
-                        _, _, curr_board = parse_input(self.board_dir)
-                        score_X = sum(row.count(X_TYPE) for row in curr_board)
-                        score_O = sum(row.count(O_TYPE) for row in curr_board) + self.komi
-                        final_reward = 0.0
-                        outcome = ""
-                        if (self.agent.piece_type == X_TYPE and score_X > score_O) or \
-                            (self.agent.piece_type == O_TYPE and score_O > score_X):
-                            final_reward = 100.0
-                            # print("The agent won!")
-                            self.wins += 1
-                            outcome = "WIN"
-                        elif score_X == score_O:
-                            final_reward = 0.0
-                            self.draws += 1
-                            outcome = "DRAW"
-                            # print("The game is a draw!")
-                        else:
-                            final_reward = -100.0
-                            self.losses += 1
-                            outcome = "LOSS"
-                            # print("The agent Lost!")
-                        self.recent_outcomes.append(outcome)
-                        self.win_history.append(1 if outcome == "WIN" else 0)
-
-                        self.agent.game_end = True
-                        self.agent.reward = final_reward
-                        self.agent.update_q_value()
-                        self.agent.decay_epsilon()
-                        self.agent.decay_alpha()
-                else:
-                    if self.invalid_move:
-                        print("warning! invalid step is taken, check step validity logic!")
-            self.num_episodes_completed += 1
-            # self.analyze_performance()
-            self.analyze_q_table(self.num_episodes)
+                        self._process_game_end(episode_data)
+            
+            # End of episode processing
+            self._log_episode_results(episode_data)
             self.num_episodes -= 1
-            self.episode_rewards.append(final_reward)
-            self.epsilon_history.append(self.agent.epsilon)
+        
+        print("\nTraining complete!")
 
-            if self.num_episodes_completed % 500 == 0:
-                weights = self.agent.q_function.weights
-                if len(weights) > 0:
-                    self.q_stats_history['max_q'].append(float(max(weights)))
-                    self.q_stats_history['min_q'].append(float(min(weights)))
-                    self.q_stats_history['avg_q'].append(float(np.mean(weights))) 
+    def _display_progress(self, start_time, total_episodes):
+        """Display progress bar for training."""
+        if self.num_episodes % 10 == 0:
+            elapsed_time = time.time() - start_time
+            progress = (total_episodes - self.num_episodes) / total_episodes
+            ets = elapsed_time / progress - elapsed_time if progress > 0 else 0
+            bar_length = 30
+            filled_length = int(bar_length * progress)
+            bar = '█' * filled_length + '-' * (bar_length - filled_length)
+            print(f"\rTraining Progress: |{bar}| {progress:.2%} complete. Elapsed: {elapsed_time:.2f}s. ETA: {ets:.2f}s.", end='')
+
+    def _setup_episode(self):
+        """Setup a new episode and return tracking data."""
+        # Initialize game state
+        self.cur_step = self.step_limit
+        self.game_end = False
+        self.agent_pass = False
+        self.opponent_pass = False
+        self.invalid_move = False
+        
+        # Initialize agent
+        self.agent.initiate_game()
+        self.reset_input()
+        
+        # Log initial board state
+        initial_board = [[0 for _ in range(5)] for _ in range(5)]
+        self.logger.log_board(
+            self.current_phase, 
+            self.num_episodes_completed, 
+            0, 
+            self.agent.piece_type, 
+            initial_board, 
+            None, 
+            0.0
+        )
+        
+        # Return episode tracking data
+        return {
+            'q_values': [],
+            'final_reward': 0.0
+        }
+
+    def _play_turn(self, episode_data):
+        """Play a single turn (agent and opponent)."""
+        if self.agent.piece_type == X_TYPE:
+            # Agent (Black) plays first
+            self._agent_move(episode_data)
+            
+            # If game not ended by agent's move, opponent plays
+            if not self.game_end:
+                self._opponent_move()
+                
+                # After opponent's move, agent observes and updates Q-values
+                self.agent.observe_world()
+                self.agent.update_q_value()
+        else:
+            # Opponent (Black) plays first
+            self._opponent_move()
+            
+            # If game not ended by opponent's move, agent plays
+            if not self.game_end:
+                self._agent_move(episode_data)
+                
+                # Update Q-value after agent's move if needed
+                if self.agent.last_action is not None:
+                    self.agent.observe_world()
+                    self.agent.update_q_value()
+
+    def _agent_move(self, episode_data):
+        """Handle agent's move and logging."""
+        self.cur_piece = self.agent.piece_type
+        
+        # Load current state and make move
+        piece_type, previous_board, board = readInput(5)
+        go = GO(5)
+        go.set_board(piece_type, previous_board, board)
+        self.agent.load_cur_state(self.board_dir)
+        self.agent.take_action(go)
+        
+        # Update board state
+        self.update_input()
+        self.cur_step -= 1
+        
+        # Log move and Q-value
+        q_value = self.agent.q_function.predict(
+            self.agent.last_state_features,
+            self.agent.last_action_features
+        )
+        episode_data['q_values'].append(q_value)
+        
+        # Log board state
+        self.logger.log_board(
+            self.current_phase, 
+            self.num_episodes_completed, 
+            self.step_limit - self.cur_step, 
+            self.agent.piece_type, 
+            self.agent.curr_board, 
+            self.agent.last_action, 
+            q_value
+        )
+        
+        # Periodically log weights
+        if self.num_episodes_completed % self.log_frequency == 0:
+            self.logger.log_weights(
+                self.current_phase, 
+                self.num_episodes_completed, 
+                self.step_limit - self.cur_step, 
+                self.agent.q_function.weights
+            )
+
+    def _opponent_move(self):
+        """Handle opponent's move."""
+        self.cur_piece = O_TYPE if self.agent.piece_type == X_TYPE else X_TYPE
+        
+        # Load current state and make move
+        self.opponent.load_cur_state(self.board_dir)
+        self.opponent.select_move()
+        
+        # Update board state
+        self.update_input()
+        self.cur_step -= 1
+
+    def _process_game_end(self, episode_data):
+        """Process end of game, calculate scores and rewards."""
+        # Parse final board state
+        _, _, curr_board = parse_input(self.board_dir)
+        
+        # Calculate scores
+        score_X = sum(row.count(X_TYPE) for row in curr_board)
+        score_O = sum(row.count(O_TYPE) for row in curr_board) + self.komi
+        
+        # Determine outcome and reward
+        final_reward = 0.0
+        outcome = ""
+        
+        if (self.agent.piece_type == X_TYPE and score_X > score_O) or \
+        (self.agent.piece_type == O_TYPE and score_O > score_X):
+            center_bonus = 0.0
+            center_positions = [(1, 1), (1, 2), (1, 3), (2, 1), (2, 2), (2, 3), (3, 1), (3, 2), (3, 3)]
+            for i, j in center_positions:
+                if curr_board[i][j] == self.agent.piece_type:
+                    center_bonus += 0.1
+            final_reward = 2.0 + center_bonus
+            self.wins += 1
+            outcome = "WIN"
+        elif score_X == score_O:
+            final_reward = 0.0
+            self.draws += 1
+            outcome = "DRAW"
+        else:
+            final_reward = -2.0
+            self.losses += 1
+            outcome = "LOSS"
+        
+        # Store results
+        self.recent_outcomes.append(outcome)
+        self.win_history.append(1 if outcome == "WIN" else 0)
+        episode_data['final_reward'] = final_reward
+        
+        # Update agent with final reward
+        self.agent.game_end = True
+        self.agent.reward = final_reward
+        self.agent.update_q_value()
+        self.agent.decay_epsilon()
+        self.agent.decay_alpha()
+
+    def _log_episode_results(self, episode_data):
+        """Log results at the end of an episode."""
+        # Update episode counter
+        self.num_episodes_completed += 1
+        
+        # Store episode data
+        self.episode_rewards.append(episode_data['final_reward'])
+        self.epsilon_history.append(self.agent.epsilon)
+        
+        # Log episode summary
+        avg_q_value = sum(episode_data['q_values']) / len(episode_data['q_values']) if episode_data['q_values'] else 0
+        
+        self.logger.log_episode(
+            self.current_phase,
+            self.num_episodes_completed,
+            self.step_limit - self.cur_step,  # Steps taken
+            "WIN" if episode_data['final_reward'] > 0 else ("DRAW" if episode_data['final_reward'] == 0 else "LOSS"),
+            episode_data['final_reward'],
+            avg_q_value
+        )
+        
+        # Analyze results periodically
+        self.analyze_q_table(self.num_episodes)
+        
+        # Track weight statistics periodically
+        if self.num_episodes_completed % 500 == 0:
+            weights = self.agent.q_function.weights
+            if len(weights) > 0:
+                self.q_stats_history['max_q'].append(float(max(weights)))
+                self.q_stats_history['min_q'].append(float(min(weights)))
+                self.q_stats_history['avg_q'].append(float(np.mean(weights)))
 
     def update_input(self):
         """

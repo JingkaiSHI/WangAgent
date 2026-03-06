@@ -12,146 +12,75 @@ import numpy as np
 X_TYPE, O_TYPE = 1, 2
 
 def get_group(board, i, j, player):
-    """
-    Returns all coordinates belonging to the connected group of stones for the given player starting at (i, j).
-    """
-    group = []
-    stack = [(i, j)]
-    visited = set()
-    while stack:
-        x, y = stack.pop()
-        if (x, y) in visited:
-            continue
-        visited.add((x, y))
-        group.append((x, y))
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            nx, ny = x + dx, y + dy
-            if 0 <= nx < len(board) and 0 <= ny < len(board[0]):
-                if board[nx][ny] == player and (nx, ny) not in visited:
-                    stack.append((nx, ny))
-    return group
+    """Get connected group using host's logic"""
+    from host import GO
+    test_go = GO(5)
+    test_go.board = [row[:] for row in board]
+    return test_go.ally_dfs(i, j)
 
 def count_liberties(board, i, j, player):
-    """
-    Count unique liberties (empty adjacent cells) for the group at position (i, j) belonging to player.
-    """
-    if board[i][j] != player:
-        return 0
-
-    visited = set()
-    liberties = set()
-    stack = [(i, j)]
-    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-
-    while stack:
-        x, y = stack.pop()
-        if (x, y) in visited:
-            continue
-        visited.add((x, y))
-        for dx, dy in directions:
-            nx, ny = x + dx, y + dy
-            if 0 <= nx < len(board) and 0 <= ny < len(board[0]):
-                if board[nx][ny] == 0:
-                    liberties.add((nx, ny))
-                elif board[nx][ny] == player and (nx, ny) not in visited:
-                    stack.append((nx, ny))
-    return len(liberties)
+    """Count liberties using host's logic"""
+    from host import GO
+    test_go = GO(5)
+    test_go.board = [row[:] for row in board]
+    return sum(1 for _ in test_go.detect_neighbor_ally(i, j))
 
 def is_suicide(board, i, j, player):
-    """
-    Examine if placing a stone at (i, j) will cause suicide.
-    Assumes the slot is empty.
-    """
-    # Create a temporary copy and place the stone.
-    temp_board = [row.copy() for row in board]
+    """Check for suicide move using host's logic"""
+    from host import GO
+    test_go = GO(5)
+    test_go.board = [row[:] for row in board]
+    test_go.previous_board = None
+    # First check if stone has liberty after placement
+    temp_board = [row[:] for row in board]
     temp_board[i][j] = player
-
-    # Determine the opponent's piece type.
-    opponent = X_TYPE if player == O_TYPE else O_TYPE
-    
-    # First identify which opponent groups will be captured
-    groups_to_capture = []
-    directions = [(-1, 0), (1, 0), (0, 1), (0, -1)]
-    
-    for dx, dy in directions:
-        nx, ny = i + dx, j + dy
-        if 0 <= nx < len(temp_board) and 0 <= ny < len(temp_board[0]):
-            if temp_board[nx][ny] == opponent:
-                if count_liberties(temp_board, nx, ny, opponent) == 0:
-                    group = get_group(temp_board, nx, ny, opponent)
-                    group_positions = set(group)
-                    already_captured = False
-                    for existing_group in groups_to_capture:
-                        if set(existing_group) == group_positions:
-                            already_captured = True
-                            break
-                    if not already_captured:
-                        groups_to_capture.append(group)
-    
-    # Remove all captured opponent stones at once
-    for group in groups_to_capture:
-        for (gx, gy) in group:
-            temp_board[gx][gy] = 0  # Remove captured opponent stones.
-
-    # Check liberties for the group that now includes the new stone.
-    return count_liberties(temp_board, i, j, player) == 0
+    temp_go = GO(5)
+    temp_go.board = temp_board
+    # If move would have liberties, it's not suicide
+    if temp_go.find_liberty(i, j):
+        return False
+    # Check if it would capture opponent stones (not suicide)
+    for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        ni, nj = i + di, j + dj
+        if 0 <= ni < 5 and 0 <= nj < 5 and board[ni][nj] == 3-player:
+            # Check if opponent group would have no liberties
+            if not test_go.find_liberty(ni, nj):
+                return False
+    return True
 
 def violates_ko(current_board, prev_board, move, player):
-    """
-    Examine if placing a stone at 'move' violates the KO rule by simulating the move.
-    The simulation includes:
-      - Placing the stone.
-      - Removing any adjacent opponent groups with no liberties (i.e., captures).
-    If the resulting board is identical to prev_board, then the move violates KO.
-    
-    :param current_board: 2D list representing the current board.
-    :param prev_board: 2D list representing the board from one move ago.
-    :param move: A tuple (i, j) representing the move, or "PASS".
-    :param player: The current player's piece type.
-    :return: True if the move violates KO, otherwise False.
-    """
-    if move == "PASS":
-        return False
-    
+    """Check for ko violation using host's logic"""
+    from host import GO
+    test_go = GO(5)
+    test_go.board = [row[:] for row in current_board]
+    test_go.previous_board = prev_board
+    # Calculate died_pieces for proper Ko detection
+    opponent = 3 - player
+    test_go.died_pieces = []
+    for x in range(5):
+        for y in range(5):
+            if current_board[x][y] == opponent and not test_go.find_liberty(x, y):
+                group = test_go.ally_dfs(x, y)
+                for piece in group:
+                    if piece not in test_go.died_pieces:
+                        test_go.died_pieces.append(piece)
+    # Use host's ko check
     i, j = move
-    # Create a deep copy of the current board.
-    new_board = [row.copy() for row in current_board]
-    # Place the stone.
-    new_board[i][j] = player
-
-    # Determine the opponent's piece type.
-    opponent = X_TYPE if player == O_TYPE else O_TYPE
-
-    # For each adjacent cell, check if it belongs to an opponent group that should be captured.
-    directions = [(-1, 0), (1, 0), (0, 1), (0, -1)]
-    for dx, dy in directions:
-        nx, ny = i + dx, j + dy
-        if 0 <= nx < len(new_board) and 0 <= ny < len(new_board[0]):
-            if new_board[nx][ny] == opponent:
-                # If this opponent group has no liberties, capture it.
-                if count_liberties(new_board, nx, ny, opponent) == 0:
-                    group = get_group(new_board, nx, ny, opponent)
-                    for (gx, gy) in group:
-                        new_board[gx][gy] = 0
-
-    # Compare the resulting board to the previous board.
-    return new_board == prev_board
-
+    return not test_go.valid_place_check(i, j, player, test_check=True)
 
 def get_all_legal_moves(curr_board, prev_board, player):
-    """
-    Returns all legal moves for the player given the current and previous board.
-    """
+    """Get all legal moves using host's logic"""
+    from host import GO
+    test_go = GO(5)
+    test_go.board = [row[:] for row in curr_board]
+    test_go.previous_board = prev_board if prev_board else None
+    
     legal_moves = []
-    board_size = len(curr_board)
-    for i in range(board_size):
-        for j in range(len(curr_board[0])):
-            if curr_board[i][j] == 0:
-                if (not is_suicide(curr_board, i, j, player)) and (not violates_ko(curr_board, prev_board, (i, j), player)):
-                    legal_moves.append((i, j))
+    for i in range(5):
+        for j in range(5):
+            if curr_board[i][j] == 0 and test_go.valid_place_check(i, j, player):
+                legal_moves.append((i, j))
     legal_moves.append("PASS")
-    #if random.random() < 0.1:
-    #    print(f"Legal moves for player {player}: {legal_moves}") 
     return legal_moves
 
 ####################################################
@@ -218,3 +147,33 @@ def read_output(output_dir="output.txt"):
             return int(coordinates[0]), int(coordinates[1])
     except Exception as e:
         raise RuntimeError(f"Input Parsing Failed: {str(e)}")
+    
+
+def detect_urgent_threats(board, piece_type):
+    """Detect urgent threats requiring immediate response"""
+    opponent = 3 - piece_type
+    urgent_defense_moves = []
+    urgent_attack_moves = []
+    
+    # Detect stones in atari (capture threats)
+    for i in range(5):
+        for j in range(5):
+            # Look for our stones in atari
+            if board[i][j] == piece_type and count_liberties(board, i, j, piece_type) == 1:
+                # Find the liberty position
+                for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    ni, nj = i + di, j + dj
+                    if 0 <= ni < 5 and 0 <= nj < 5 and board[ni][nj] == 0:
+                        urgent_defense_moves.append((ni, nj))
+                        break
+            
+            # Look for opponent stones we can capture
+            if board[i][j] == opponent and count_liberties(board, i, j, opponent) == 1:
+                # Find the liberty position
+                for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    ni, nj = i + di, j + dj
+                    if 0 <= ni < 5 and 0 <= nj < 5 and board[ni][nj] == 0:
+                        urgent_attack_moves.append((ni, nj))
+                        break
+    
+    return urgent_defense_moves, urgent_attack_moves
