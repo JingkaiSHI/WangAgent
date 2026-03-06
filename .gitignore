@@ -1,1 +1,6 @@
 .__pycache__
+.logs
+MCTS_Module/
+logs/
+results/
+submission_agent/
